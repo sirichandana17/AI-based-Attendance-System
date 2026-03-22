@@ -1,3 +1,15 @@
-.venv/ 
-node_modules/ 
-__pycache__/ 
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# Generated / binary
+backend/chroma_db/
+backend/attendance_report.xlsx
+
+# Environment
+.env
