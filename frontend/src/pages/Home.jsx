@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import ImageUpload from '../components/ImageUpload';
-import { attendanceAPI, qrAPI, facultyAPI } from '../services/api';
+import { attendanceAPI, qrAPI } from '../services/api';
 
 const StatBadge = ({ label, value, color }) => (
   <div style={{
@@ -22,16 +22,18 @@ const Home = () => {
   const [showUpload, setShowUpload]         = useState(false);
   const [qrData, setQrData]                 = useState(null);
   const [qrCountdown, setQrCountdown]       = useState(0);
-  const [qrScanned, setQrScanned]           = useState([]); // [{student_id, time}]
-  // Register students modal
-  const [showRegister, setShowRegister]     = useState(false);
-  const [regLoading, setRegLoading]         = useState(false);
-  const [regResult, setRegResult]           = useState(null);
+  const [qrScanned, setQrScanned]           = useState([]);
+  // Accumulated session ids across all methods for scoped report
+  const [sessionIds, setSessionIds]         = useState([]);
+  // Last manual attendance result for persistent UI
+  const [manualAdded, setManualAdded]       = useState([]);
   // Manual attendance modal
   const [showManual, setShowManual]         = useState(false);
   const [manualInput, setManualInput]       = useState('');
   const [manualLoading, setManualLoading]   = useState(false);
   const [manualResult, setManualResult]     = useState(null);
+  // Report method filter
+  const [reportMethod, setReportMethod]     = useState('all');
 
   const countdownRef = useRef(null);
   const pollRef      = useRef(null);
@@ -58,6 +60,7 @@ const Home = () => {
       const res = await attendanceAPI.upload(formData);
       setAttendanceData(res.data);
       setStatusMsg(res.data.message);
+      if (res.data.session_id) setSessionIds(prev => [...new Set([...prev, res.data.session_id])]);
       setShowUpload(false);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
     } catch (err) {
@@ -74,6 +77,7 @@ const Home = () => {
       setQrData(res.data);
       setQrCountdown(res.data.expires_in);
       setQrScanned([]);
+      if (res.data.session_id) setSessionIds(prev => [...new Set([...prev, res.data.session_id])]);
       setTimeout(() => qrSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
       clearInterval(countdownRef.current);
@@ -106,6 +110,8 @@ const Home = () => {
     try {
       const res = await attendanceAPI.manual(ids);
       setManualResult(res.data);
+      if (res.data.session_id) setSessionIds(prev => [...new Set([...prev, res.data.session_id])]);
+      if (res.data.added?.length) setManualAdded(prev => [...new Set([...prev, ...res.data.added])]);
       setManualInput('');
     } catch (err) {
       setManualResult({ error: err.response?.data?.message || 'Failed to add attendance' });
@@ -114,26 +120,13 @@ const Home = () => {
     }
   };
 
-  // ── Bulk Register Students ───────────────────────────────────────────────
-  const handleRegisterStudents = async () => {
-    setRegLoading(true);
-    setRegResult(null);
-    try {
-      const res = await facultyAPI.registerStudents();
-      setRegResult(res.data);
-    } catch (err) {
-      setRegResult({ error: err.response?.data?.message || 'Registration failed' });
-    } finally {
-      setRegLoading(false);
-    }
-  };
-
   const handleDownloadReport = async () => {
     try {
-      const res = await attendanceAPI.getReport();
+      const res = await attendanceAPI.getReport(reportMethod, sessionIds);
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
-      a.href = url; a.setAttribute('download', 'attendance_report.xlsx');
+      a.href = url;
+      a.setAttribute('download', `attendance_report_${reportMethod}.xlsx`);
       document.body.appendChild(a); a.click(); a.remove();
     } catch (_) {
       setStatusMsg('Failed to download report');
@@ -171,14 +164,6 @@ const Home = () => {
           </div>
 
           <div className="card">
-            <h3>Register Students</h3>
-            <p>Bulk register all students with college email and RNO password</p>
-            <button className="btn-primary" onClick={() => { setShowRegister(true); setRegResult(null); }}>
-              Register Students
-            </button>
-          </div>
-
-          <div className="card">
             <h3>Add Manually</h3>
             <p>Mark missed students as present by entering their RNOs</p>
             <button className="btn-primary" onClick={() => { setShowManual(true); setManualResult(null); setManualInput(''); }}>
@@ -186,10 +171,44 @@ const Home = () => {
             </button>
           </div>
 
-          <div className="card">
-            <h3>Download Report</h3>
-            <p>Export attendance records as Excel file</p>
-            <button className="btn-secondary" onClick={handleDownloadReport}>
+        </div>
+
+        {/* ── Download Report ── */}
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1.5rem' }}>
+          <div className="card" style={{ width: '100%', maxWidth: 520 }}>
+            <h3 style={{ textAlign: 'center', marginBottom: '0.5rem' }}>Download Report</h3>
+            <p style={{ textAlign: 'center', color: '#64748b', marginBottom: '1rem', fontSize: '0.9rem' }}>
+              Export current session attendance as Excel file
+            </p>
+            {sessionIds.length === 0 ? (
+              <p style={{ textAlign: 'center', fontSize: '0.82rem', color: '#f59e0b', marginBottom: '0.75rem' }}>
+                No active session — run Face, QR, or Manual attendance first.
+              </p>
+            ) : (
+              <p style={{ textAlign: 'center', fontSize: '0.82rem', color: '#22c55e', marginBottom: '0.75rem', fontWeight: 600 }}>
+                {sessionIds.length} session(s) ready
+              </p>
+            )}
+            <select
+              value={reportMethod}
+              onChange={e => setReportMethod(e.target.value)}
+              style={{
+                width: '100%', padding: '0.65rem 0.75rem', marginBottom: '1rem',
+                border: '1px solid #e2e8f0', borderRadius: 6, fontSize: '0.95rem',
+                background: '#f8fafc', cursor: 'pointer',
+              }}
+            >
+              <option value="all">All Methods</option>
+              <option value="face">Face Recognition only</option>
+              <option value="qr">QR Scan only</option>
+              <option value="manual">Manual only</option>
+            </select>
+            <button
+              className="btn-secondary"
+              onClick={handleDownloadReport}
+              disabled={sessionIds.length === 0}
+              style={{ width: '100%' }}
+            >
               Download Excel
             </button>
           </div>
@@ -255,75 +274,6 @@ const Home = () => {
           </div>
         )}
 
-        {/* ── Register Students Modal ── */}
-        {showRegister && (
-          <div className="modal-overlay" onClick={() => setShowRegister(false)}>
-            <div className="modal-content" onClick={e => e.stopPropagation()}>
-              <div className="modal-header">
-                <h3>Register Students</h3>
-                <button className="modal-close" onClick={() => setShowRegister(false)}>×</button>
-              </div>
-              <div style={{ padding: '1.5rem' }}>
-                <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '1rem', marginBottom: '1.25rem' }}>
-                  <p style={{ margin: 0, color: '#0369a1', fontSize: '0.9rem' }}>
-                    <strong>Auto-generated credentials:</strong><br />
-                    Email: <code>&lt;rno&gt;@bvrithyderabad.edu.in</code><br />
-                    Password: <code>&lt;rno&gt;</code> (e.g. 23wh1a6601)
-                  </p>
-                </div>
-
-                {!regResult ? (
-                  <button className="btn-primary" disabled={regLoading} onClick={handleRegisterStudents}
-                    style={{ marginTop: 0 }}>
-                    {regLoading ? 'Registering all students...' : 'Register All Students'}
-                  </button>
-                ) : regResult.error ? (
-                  <div className="error-message">{regResult.error}</div>
-                ) : (
-                  <>
-                    <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '1rem', marginBottom: '1rem' }}>
-                      <p style={{ margin: 0, color: '#15803d', fontWeight: 600 }}>{regResult.message}</p>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-                      <StatBadge label="Total"      value={regResult.total}              color="#6366f1" />
-                      <StatBadge label="Registered" value={regResult.registered?.length} color="#22c55e" />
-                      <StatBadge label="Skipped"    value={regResult.skipped?.length}    color="#f59e0b" />
-                      {regResult.failed?.length > 0 &&
-                        <StatBadge label="Failed" value={regResult.failed.length} color="#ef4444" />}
-                    </div>
-                    {regResult.registered?.length > 0 && (
-                      <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                          <thead>
-                            <tr style={{ background: '#f8fafc' }}>
-                              <th style={thStyle}>#</th>
-                              <th style={thStyle}>RNO</th>
-                              <th style={thStyle}>Email</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {regResult.registered.map((rno, i) => (
-                              <tr key={rno} style={{ borderTop: '1px solid #f1f5f9' }}>
-                                <td style={tdStyle}>{i + 1}</td>
-                                <td style={tdStyle}>{rno}</td>
-                                <td style={tdStyle}>{rno}@bvrithyderabad.edu.in</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                    <button className="btn-primary" onClick={handleRegisterStudents}
-                      disabled={regLoading} style={{ marginTop: '1rem' }}>
-                      {regLoading ? 'Running...' : 'Run Again'}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ── QR Panel ── */}
         {qrData && (
           <div ref={qrSectionRef} className="card" style={{ marginTop: '1.5rem' }}>
@@ -374,6 +324,35 @@ const Home = () => {
                   <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No students scanned yet</p>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Manual Attendance Results Panel ── */}
+        {manualAdded.length > 0 && (
+          <div className="card" style={{ marginTop: '1.5rem' }}>
+            <h3 style={{ marginBottom: '1rem' }}>Manually Added Students</h3>
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc' }}>
+                    <th style={thStyle}>#</th>
+                    <th style={thStyle}>Student ID</th>
+                    <th style={thStyle}>Method</th>
+                    <th style={thStyle}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manualAdded.map((s, i) => (
+                    <tr key={s} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={tdStyle}>{i + 1}</td>
+                      <td style={tdStyle}>{s}</td>
+                      <td style={tdStyle}>Manual</td>
+                      <td style={{ ...tdStyle, color: '#16a34a', fontWeight: 600 }}>Present</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
@@ -442,7 +421,16 @@ const Home = () => {
   );
 };
 
-const thStyle = { padding: '0.5rem 0.75rem', textAlign: 'left', fontWeight: 600, color: '#475569', fontSize: '0.8rem' };
-const tdStyle = { padding: '0.5rem 0.75rem', color: '#374151' };
+const thStyle    = { padding: '0.5rem 0.75rem', textAlign: 'left', fontWeight: 600, color: '#475569', fontSize: '0.8rem' };
+const tdStyle    = { padding: '0.5rem 0.75rem', color: '#374151' };
+const labelStyle = { display: 'block', fontWeight: 600, color: '#374151', fontSize: '0.9rem', marginBottom: '0.4rem' };
+const selectStyle = {
+  width: '100%', padding: '0.65rem 0.75rem', border: '1px solid #e2e8f0',
+  borderRadius: 6, fontSize: '0.95rem', background: '#f8fafc', cursor: 'pointer',
+};
+const inputStyle = {
+  width: '100%', padding: '0.65rem 0.75rem', border: '1px solid #e2e8f0',
+  borderRadius: 6, fontSize: '0.95rem', boxSizing: 'border-box',
+};
 
 export default Home;

@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS faculty (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create students table (for QR login-based attendance)
+-- Create students table
 CREATE TABLE IF NOT EXISTS students (
     id INT AUTO_INCREMENT PRIMARY KEY,
     student_id VARCHAR(50) UNIQUE NOT NULL,
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS attendance (
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     faculty_id INT,
     method VARCHAR(20) DEFAULT 'face',
+    session_id VARCHAR(36) DEFAULT NULL,
     FOREIGN KEY (faculty_id) REFERENCES faculty(id) ON DELETE CASCADE
 );
 

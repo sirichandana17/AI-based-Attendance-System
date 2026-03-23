@@ -37,11 +37,10 @@ DATA_DIR    = os.path.dirname(__file__)
 CHROMA_DIR  = os.path.join(DATA_DIR, "chroma_db")
 MODEL_NAME  = "Facenet512"
 DETECTOR    = "retinaface"
-THRESHOLD    = 0.35
-QR_TTL_SEC   = 120
+SIMILARITY_THRESHOLD = 0.50
+QR_TTL_SEC  = 120
 
 def get_local_ip():
-    """Get the machine's LAN IP so QR works on phones on the same network."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -51,28 +50,24 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
-# Priority: FRONTEND_URL env var (set this to ngrok URL for public access)
-# Fallback: auto-detected LAN IP
-_local_ip     = get_local_ip()
-FRONTEND_URL  = os.environ.get("FRONTEND_URL", f"http://{_local_ip}:5173")
-BACKEND_URL   = os.environ.get("BACKEND_URL",  f"http://{_local_ip}:5000")
+_local_ip    = get_local_ip()
+FRONTEND_URL = os.environ.get("FRONTEND_URL", f"http://{_local_ip}:5173")
+BACKEND_URL  = os.environ.get("BACKEND_URL",  f"http://{_local_ip}:5000")
 print(f"[CONFIG] Local IP   : {_local_ip}")
 print(f"[CONFIG] Frontend   : {FRONTEND_URL}")
 print(f"[CONFIG] Backend    : {BACKEND_URL}")
-print(f"[CONFIG] To use ngrok: set FRONTEND_URL and BACKEND_URL env vars before starting")
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "attendance_secret_key_2026"
 CORS(app)
 
 DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
+    "host":     "localhost",
+    "user":     "root",
     "password": "root",
     "database": "attendance_system",
 }
 
-# In-memory QR store: {token: {faculty_id, expires_at, scanned_by: {student_id: timestamp}, devices: set()}}
 QR_STORE: dict = {}
 
 # ── ChromaDB ──────────────────────────────────────────────────────────────────
@@ -116,23 +111,6 @@ def init_db():
         )
     """)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS students (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            student_id VARCHAR(50) UNIQUE NOT NULL,
-            email VARCHAR(255) UNIQUE NOT NULL,
-            name VARCHAR(255) NOT NULL,
-            password VARCHAR(255) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    # Add email column if upgrading from old schema
-    try:
-        cur.execute("ALTER TABLE students ADD COLUMN email VARCHAR(255) UNIQUE")
-        conn.commit()
-        print("[DB] Added 'email' column to students table")
-    except Exception:
-        pass
-    cur.execute("""
         CREATE TABLE IF NOT EXISTS attendance (
             id INT AUTO_INCREMENT PRIMARY KEY,
             student_id VARCHAR(50) NOT NULL,
@@ -151,13 +129,18 @@ def init_db():
             FOREIGN KEY (faculty_id) REFERENCES faculty(id)
         )
     """)
-    # Add method column if it doesn't exist
     try:
         cur.execute("ALTER TABLE attendance ADD COLUMN method VARCHAR(20) DEFAULT 'face'")
         conn.commit()
         print("[DB] Added 'method' column to attendance table")
     except Exception:
-        pass  # Column already exists
+        pass
+    try:
+        cur.execute("ALTER TABLE attendance ADD COLUMN session_id VARCHAR(36) DEFAULT NULL")
+        conn.commit()
+        print("[DB] Added 'session_id' column to attendance table")
+    except Exception:
+        pass
     conn.commit()
     cur.close()
     conn.close()
@@ -187,27 +170,7 @@ def token_required(f):
     return decorated
 
 
-def student_token_required(f):
-    """Decorator for student-authenticated endpoints."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.headers.get("Authorization", "")
-        if not auth:
-            return jsonify({"message": "Student token is missing"}), 401
-        try:
-            tok = auth[7:] if auth.startswith("Bearer ") else auth
-            data = jwt.decode(tok, app.config["SECRET_KEY"], algorithms=["HS256"])
-            if data.get("role") != "student":
-                return jsonify({"message": "Invalid student token"}), 401
-            current_student_id = data["student_id"]
-        except Exception:
-            return jsonify({"message": "Token is invalid"}), 401
-        return f(current_student_id, *args, **kwargs)
-    return decorated
-
-
 def cosine_similarity(a, b):
-    """Explicit cosine similarity between two L2-normalized vectors."""
     a = np.array(a, dtype=np.float32)
     b = np.array(b, dtype=np.float32)
     norm_a = np.linalg.norm(a)
@@ -219,22 +182,11 @@ def cosine_similarity(a, b):
 
 # ── Face Recognition Core ─────────────────────────────────────────────────────
 def recognize_faces_in_image(img: np.ndarray):
-    """
-    Detect ALL faces in img using RetinaFace via DeepFace.
-    For each face generate a Facenet512 embedding, normalize it,
-    query ChromaDB with cosine distance, apply threshold 0.35.
-
-    Returns:
-        recognized  – set of matched student_ids
-        face_count  – total faces detected
-        debug_info  – list of per-face debug dicts
-    """
     collection = get_collection()
     if collection is None:
         print("[ERROR] ChromaDB collection not found. Run generate_embeddings_improved.py")
         return set(), 0, []
 
-    # Save full image to temp file so DeepFace can detect all faces
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         tmp_path = tmp.name
     cv2.imwrite(tmp_path, img)
@@ -244,7 +196,6 @@ def recognize_faces_in_image(img: np.ndarray):
     face_count = 0
 
     try:
-        # extract_faces returns one entry per detected face
         faces_data = DeepFace.extract_faces(
             img_path=tmp_path,
             detector_backend=DETECTOR,
@@ -255,21 +206,21 @@ def recognize_faces_in_image(img: np.ndarray):
         print(f"\n[DEBUG] Faces detected: {face_count}")
 
         for i, face_obj in enumerate(faces_data):
-            face_arr = face_obj.get("face")  # numpy array (H,W,3) float 0-1
+            face_arr = face_obj.get("face")
             if face_arr is None:
                 continue
 
-            # Convert float [0,1] → uint8 [0,255] and save to temp
             face_uint8 = (face_arr * 255).astype(np.uint8)
+            face_bgr   = cv2.cvtColor(face_uint8, cv2.COLOR_RGB2BGR)
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as ftmp:
                 face_tmp = ftmp.name
-            cv2.imwrite(face_tmp, cv2.cvtColor(face_uint8, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(face_tmp, face_bgr)
 
             try:
                 emb_objs = DeepFace.represent(
                     img_path=face_tmp,
                     model_name=MODEL_NAME,
-                    detector_backend="skip",   # face already cropped
+                    detector_backend="skip",
                     enforce_detection=False,
                     align=False,
                 )
@@ -284,34 +235,32 @@ def recognize_faces_in_image(img: np.ndarray):
                     include=["embeddings", "metadatas", "distances"],
                 )
 
-                # ChromaDB returns cosine distance (1 - similarity) when space="cosine"
                 chroma_distance = results["distances"][0][0]
                 meta       = results["metadatas"][0][0]
                 student_id = meta["student_id"]
 
-                # Also compute explicit cosine similarity for verification/logging
                 stored_emb = results["embeddings"][0][0] if results.get("embeddings") else None
                 if stored_emb is not None:
                     similarity = cosine_similarity(query_emb, stored_emb)
-                    distance   = round(1.0 - similarity, 4)
                 else:
                     similarity = round(1.0 - chroma_distance, 4)
-                    distance   = round(chroma_distance, 4)
+                distance = round(1.0 - similarity, 4)
 
+                is_match = similarity >= SIMILARITY_THRESHOLD
                 print(f"  Face {i+1}: best_match={student_id}  "
                       f"similarity={similarity:.4f}  distance={distance:.4f}  "
-                      f"{'MATCH' if distance < THRESHOLD else 'UNKNOWN'}")
+                      f"{'MATCH' if is_match else 'UNKNOWN'}")
 
                 entry = {
                     "face_index": i + 1,
                     "best_match": student_id,
-                    "similarity": round(similarity if stored_emb is not None else (1.0 - chroma_distance), 4),
-                    "distance": distance,
-                    "confidence": round((1.0 - distance) * 100, 1),
-                    "matched": distance < THRESHOLD,
+                    "similarity": round(similarity, 4),
+                    "distance":   round(distance, 4),
+                    "confidence": round(similarity * 100, 1),
+                    "matched":    is_match,
                 }
 
-                if distance < THRESHOLD and student_id not in recognized:
+                if is_match and student_id not in recognized:
                     recognized.add(student_id)
                     entry["student_id"] = student_id
                 else:
@@ -334,84 +283,13 @@ def recognize_faces_in_image(img: np.ndarray):
     return recognized, face_count, debug_info
 
 
-EMAIL_DOMAIN = "bvrithyderabad.edu.in"
-RNO_PATTERN  = re.compile(r'^\d{2}wh[15]a66\d{2}$', re.IGNORECASE)
-
-
-def rno_to_email(rno):
-    return f"{rno.lower()}@{EMAIL_DOMAIN}"
+RNO_PATTERN = re.compile(r'^\d{2}wh[15]a66\d{2}$', re.IGNORECASE)
 
 
 def get_device_fingerprint():
-    """Hash of client IP + User-Agent — lightweight proxy deterrent."""
-    ip  = request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip()
-    ua  = request.headers.get('User-Agent', '')
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip()
+    ua = request.headers.get('User-Agent', '')
     return hashlib.sha256(f"{ip}|{ua}".encode()).hexdigest()[:16]
-
-
-# ── Faculty: Bulk Register Students ──────────────────────────────────────────
-@app.route("/api/faculty/register-students", methods=["POST"])
-@token_required
-def faculty_register_students(current_user_id):
-    """
-    Faculty bulk-registers all students from ALL_STUDENTS.
-    email = <rno>@bvrithyderabad.edu.in, password = RNO (hashed).
-    Skips already-registered students.
-    """
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({"message": "Database connection failed"}), 500
-
-    registered, skipped, failed = [], [], []
-    cur = conn.cursor()
-
-    for rno in ALL_STUDENTS:
-        email = rno_to_email(rno)
-        try:
-            cur.execute("SELECT id FROM students WHERE student_id = %s", (rno,))
-            if cur.fetchone():
-                skipped.append(rno)
-                continue
-            cur.execute(
-                "INSERT INTO students (student_id, email, name, password) VALUES (%s, %s, %s, %s)",
-                (rno, email, rno.upper(), generate_password_hash(rno)),
-            )
-            conn.commit()  # commit each row so failures don't block others
-            registered.append(rno)
-        except Exception as e:
-            conn.rollback()
-            failed.append({"rno": rno, "error": str(e)})
-
-    cur.close(); conn.close()
-    print(f"[BULK REG] registered={len(registered)} skipped={len(skipped)} failed={len(failed)}")
-
-    return jsonify({
-        "message": f"Registered {len(registered)} students, {len(skipped)} already existed.",
-        "registered": registered,
-        "skipped": skipped,
-        "failed": failed,
-        "total": len(ALL_STUDENTS),
-    }), 200
-
-
-@app.route("/api/student/debug", methods=["GET"])
-@token_required
-def student_debug(current_user_id):
-    """Faculty: verify students are stored correctly in DB."""
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({"message": "Database connection failed"}), 500
-    cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT student_id, email, name, created_at FROM students ORDER BY student_id LIMIT 100")
-    rows = cur.fetchall()
-    cur.execute("SELECT COUNT(*) AS total FROM students")
-    total = cur.fetchone()["total"]
-    cur.close(); conn.close()
-    # Convert datetime to string for JSON
-    for r in rows:
-        if r.get("created_at"):
-            r["created_at"] = r["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-    return jsonify({"total": total, "sample": rows}), 200
 
 
 # ── Faculty Auth Endpoints ────────────────────────────────────────────────────
@@ -508,15 +386,15 @@ def upload_attendance(current_user_id):
     print(f"\nFINAL: {total_faces} faces detected, {len(recognized_students)} students matched")
     print(f"{'='*60}\n")
 
-    # Save to DB
+    session_id = str(uuid.uuid4())
     conn = get_db_connection()
     if conn:
         cur = conn.cursor()
         ts = datetime.now()
         for sid in recognized_students:
             cur.execute(
-                "INSERT INTO attendance (student_id, faculty_id, timestamp, method) VALUES (%s,%s,%s,'face')",
-                (sid, current_user_id, ts),
+                "INSERT INTO attendance (student_id, faculty_id, timestamp, method, session_id) VALUES (%s,%s,%s,'face',%s)",
+                (sid, current_user_id, ts, session_id),
             )
         conn.commit(); cur.close(); conn.close()
 
@@ -524,13 +402,14 @@ def upload_attendance(current_user_id):
     accuracy = round((len(recognized_students) / total_faces * 100), 1) if total_faces > 0 else 0
 
     return jsonify({
-        "message": f"Attendance recorded for {len(recognized_students)} students",
-        "students": sorted(recognized_students),
-        "total_faces": total_faces,
+        "message":       f"Attendance recorded for {len(recognized_students)} students",
+        "session_id":    session_id,
+        "students":      sorted(recognized_students),
+        "total_faces":   total_faces,
         "matched_count": len(recognized_students),
         "unknown_count": unknown_count,
-        "accuracy": accuracy,
-        "debug": all_debug,
+        "accuracy":      accuracy,
+        "debug":         all_debug,
     }), 200
 
 
@@ -538,39 +417,44 @@ def upload_attendance(current_user_id):
 @app.route("/api/qr/generate", methods=["POST"])
 @token_required
 def generate_qr(current_user_id):
-    """Faculty generates a QR code. QR encodes a URL that opens the scan page."""
-    qr_token = str(uuid.uuid4())
+    body         = request.get_json(force=True, silent=True) or {}
+    frontend_url = (body.get("frontend_url") or "").strip().rstrip("/") or FRONTEND_URL
+    backend_url  = (body.get("backend_url")  or "").strip().rstrip("/") or BACKEND_URL
+
+    qr_token   = str(uuid.uuid4())
+    session_id = str(uuid.uuid4())
     expires_at = time.time() + QR_TTL_SEC
 
     QR_STORE[qr_token] = {
         "faculty_id": current_user_id,
         "expires_at": expires_at,
-        "scanned_by": {},   # {student_id: "HH:MM:SS"}
-        "devices":    set(), # device fingerprints that have submitted
+        "session_id": session_id,
+        "scanned_by": {},
+        "devices":    set(),
     }
 
-    # QR encodes a URL with backend IP embedded as ?api= param
-    # This lets the student's phone POST to the correct backend regardless of network
-    scan_url = f"{FRONTEND_URL}/qr/{qr_token}?api={BACKEND_URL}"
+    scan_url = f"{frontend_url}/qr/{qr_token}?api={backend_url}"
     qr_img = qrcode.make(scan_url)
     buf = BytesIO()
     qr_img.save(buf, format="PNG")
     buf.seek(0)
     qr_b64 = base64.b64encode(buf.read()).decode()
 
+    print(f"[QR] token={qr_token[:8]}... frontend={frontend_url} backend={backend_url}")
+
     return jsonify({
-        "qr_token": qr_token,
-        "qr_image": f"data:image/png;base64,{qr_b64}",
-        "scan_url": scan_url,
-        "backend_url": BACKEND_URL,
-        "expires_in": QR_TTL_SEC,
-        "message": f"QR code valid for {QR_TTL_SEC} seconds",
+        "qr_token":    qr_token,
+        "session_id":  session_id,
+        "qr_image":    f"data:image/png;base64,{qr_b64}",
+        "scan_url":    scan_url,
+        "backend_url": backend_url,
+        "expires_in":  QR_TTL_SEC,
+        "message":     f"QR code valid for {QR_TTL_SEC} seconds",
     }), 200
 
 
 @app.route("/api/qr/scan", methods=["POST"])
 def scan_qr():
-    """No-auth QR scan. Student enters RNO; device fingerprint prevents same-device reuse."""
     data       = request.get_json(force=True, silent=True) or {}
     qr_token   = (data.get("qr_token") or "").strip()
     student_id = (data.get("student_id") or "").strip().lower()
@@ -578,11 +462,9 @@ def scan_qr():
     if not qr_token or not student_id:
         return jsonify({"message": "qr_token and student_id are required"}), 400
 
-    # Validate RNO format
     if not RNO_PATTERN.match(student_id):
         return jsonify({"message": "Invalid RNO format (e.g. 23wh1a6601)"}), 400
 
-    # Validate student exists in system
     matched_id = next((s for s in ALL_STUDENTS if s.lower() == student_id), None)
     if not matched_id:
         return jsonify({"message": "RNO not found in system"}), 400
@@ -594,11 +476,9 @@ def scan_qr():
         QR_STORE.pop(qr_token, None)
         return jsonify({"message": "QR code has expired"}), 400
 
-    # Duplicate student check
     if matched_id in entry["scanned_by"]:
         return jsonify({"message": "Attendance already marked for this RNO"}), 400
 
-    # Device fingerprint check — one device per session
     fp = get_device_fingerprint()
     if fp in entry["devices"]:
         return jsonify({"message": "This device has already submitted attendance for this session"}), 400
@@ -615,34 +495,34 @@ def scan_qr():
             (matched_id, qr_token, entry["faculty_id"]),
         )
         cur.execute(
-            "INSERT INTO attendance (student_id, faculty_id, method) VALUES (%s,%s,'qr')",
-            (matched_id, entry["faculty_id"]),
+            "INSERT INTO attendance (student_id, faculty_id, method, session_id) VALUES (%s,%s,'qr',%s)",
+            (matched_id, entry["faculty_id"], entry["session_id"]),
         )
         conn.commit(); cur.close(); conn.close()
 
     return jsonify({
-        "message": f"Attendance marked for {matched_id}",
-        "student_id": matched_id,
+        "message":       f"Attendance marked for {matched_id}",
+        "student_id":    matched_id,
         "total_scanned": len(entry["scanned_by"]),
     }), 200
 
 
-# ── Manual Attendance (Faculty) ───────────────────────────────────────────────────
+# ── Manual Attendance ─────────────────────────────────────────────────────────
 @app.route("/api/attendance/manual", methods=["POST"])
 @token_required
 def manual_attendance(current_user_id):
-    """Faculty manually marks one or more students as present."""
     data        = request.get_json(force=True, silent=True) or {}
     student_ids = data.get("student_ids") or []
     if isinstance(student_ids, str):
         student_ids = [student_ids]
 
-    added, invalid, already = [], [], []
+    added, invalid = [], []
     conn = get_db_connection()
     if not conn:
         return jsonify({"message": "Database connection failed"}), 500
     cur = conn.cursor()
-    ts  = datetime.now()
+    ts         = datetime.now()
+    session_id = str(uuid.uuid4())
 
     for raw in student_ids:
         sid = raw.strip().lower()
@@ -651,24 +531,24 @@ def manual_attendance(current_user_id):
             invalid.append(raw)
             continue
         cur.execute(
-            "INSERT INTO attendance (student_id, faculty_id, timestamp, method) VALUES (%s,%s,%s,'manual')",
-            (matched, current_user_id, ts),
+            "INSERT INTO attendance (student_id, faculty_id, timestamp, method, session_id) VALUES (%s,%s,%s,'manual',%s)",
+            (matched, current_user_id, ts, session_id),
         )
         added.append(matched)
 
     conn.commit(); cur.close(); conn.close()
-    print(f"[MANUAL] added={added} invalid={invalid}")
+    print(f"[MANUAL] session={session_id} added={added} invalid={invalid}")
     return jsonify({
-        "message": f"Manually added {len(added)} student(s).",
-        "added": added,
-        "invalid": invalid,
+        "message":    f"Manually added {len(added)} student(s).",
+        "session_id": session_id,
+        "added":      added,
+        "invalid":    invalid,
     }), 200
 
 
-# ── QR Public Status ────────────────────────────────────────────────────────────
+# ── QR Status ─────────────────────────────────────────────────────────────────
 @app.route("/api/qr/public-status/<qr_token>", methods=["GET"])
 def qr_public_status(qr_token):
-    """Public endpoint — no auth needed. Used by student's phone to check QR validity."""
     entry = QR_STORE.get(qr_token)
     if not entry:
         return jsonify({"active": False, "message": "Invalid or expired QR"}), 404
@@ -679,80 +559,16 @@ def qr_public_status(qr_token):
 @app.route("/api/qr/status/<qr_token>", methods=["GET"])
 @token_required
 def qr_status(current_user_id, qr_token):
-    """Faculty checks who has scanned the QR."""
     entry = QR_STORE.get(qr_token)
     if not entry:
         return jsonify({"message": "QR not found or expired"}), 404
     remaining = max(0, int(entry["expires_at"] - time.time()))
     return jsonify({
-        "scanned_by": sorted(entry["scanned_by"].keys()),
-        "scanned_list": [{"student_id": sid, "time": ts} for sid, ts in sorted(entry["scanned_by"].items())],
+        "scanned_by":    sorted(entry["scanned_by"].keys()),
+        "scanned_list":  [{"student_id": sid, "time": ts} for sid, ts in sorted(entry["scanned_by"].items())],
         "scanned_count": len(entry["scanned_by"]),
-        "expires_in": remaining,
-        "active": remaining > 0,
-    }), 200
-
-
-# ── Hybrid Attendance (QR + Face) ─────────────────────────────────────────────
-@app.route("/api/attendance/hybrid", methods=["POST"])
-@token_required
-def hybrid_attendance(current_user_id):
-    """
-    Hybrid: student must appear in face recognition AND have scanned QR.
-    Prevents proxy attendance.
-    """
-    qr_token = request.form.get("qr_token")
-    if not qr_token:
-        return jsonify({"message": "qr_token is required"}), 400
-
-    entry = QR_STORE.get(qr_token)
-    if not entry:
-        return jsonify({"message": "Invalid or expired QR token"}), 400
-
-    if "images" not in request.files:
-        return jsonify({"message": "No images provided"}), 400
-
-    files = request.files.getlist("images")
-    recognized_students = set()
-    total_faces = 0
-    all_debug = []
-
-    for file in files:
-        if not file.filename:
-            continue
-        file_bytes = np.frombuffer(file.read(), np.uint8)
-        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if img is None:
-            continue
-        recognized, face_count, debug_info = recognize_faces_in_image(img)
-        recognized_students.update(recognized)
-        total_faces += face_count
-        all_debug.extend(debug_info)
-
-    # Intersection: face-recognized AND QR-scanned
-    qr_scanned = set(entry["scanned_by"].keys())
-    verified = recognized_students & qr_scanned
-    face_only = recognized_students - qr_scanned
-    qr_only   = qr_scanned - recognized_students
-
-    conn = get_db_connection()
-    if conn:
-        cur = conn.cursor()
-        ts = datetime.now()
-        for sid in verified:
-            cur.execute(
-                "INSERT INTO attendance (student_id, faculty_id, timestamp, method) VALUES (%s,%s,%s,'hybrid')",
-                (sid, current_user_id, ts),
-            )
-        conn.commit(); cur.close(); conn.close()
-
-    return jsonify({
-        "message": f"Hybrid attendance: {len(verified)} verified",
-        "verified_students": sorted(verified),
-        "face_only": sorted(face_only),
-        "qr_only": sorted(qr_only),
-        "total_faces": total_faces,
-        "debug": all_debug,
+        "expires_in":    remaining,
+        "active":        remaining > 0,
     }), 200
 
 
@@ -760,46 +576,80 @@ def hybrid_attendance(current_user_id):
 @app.route("/api/attendance/report", methods=["GET"])
 @token_required
 def get_report(current_user_id):
+    session_ids_raw = request.args.get("session_ids", "").strip()
+    method_filter   = request.args.get("method", "all").lower().strip()
+    if method_filter not in {"all", "face", "qr", "manual"}:
+        method_filter = "all"
+
+    session_ids = [s.strip() for s in session_ids_raw.split(",") if s.strip()]
+    if not session_ids:
+        return jsonify({"message": "session_ids is required"}), 400
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"message": "Database connection failed"}), 500
 
+    placeholders = ",".join(["%s"] * len(session_ids))
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT student_id, timestamp, method
-        FROM attendance
-        WHERE faculty_id = %s
-        ORDER BY timestamp DESC
-        LIMIT 200
-    """, (current_user_id,))
-    records = cur.fetchall(); cur.close(); conn.close()
+    if method_filter == "all":
+        cur.execute(f"""
+            SELECT student_id,
+                   MIN(timestamp) AS timestamp,
+                   GROUP_CONCAT(DISTINCT method ORDER BY method) AS methods
+            FROM attendance
+            WHERE faculty_id = %s AND session_id IN ({placeholders})
+            GROUP BY student_id
+            ORDER BY student_id
+        """, (current_user_id, *session_ids))
+    else:
+        cur.execute(f"""
+            SELECT student_id,
+                   MIN(timestamp) AS timestamp,
+                   method AS methods
+            FROM attendance
+            WHERE faculty_id = %s AND session_id IN ({placeholders}) AND method = %s
+            GROUP BY student_id
+            ORDER BY student_id
+        """, (current_user_id, *session_ids, method_filter))
+    records = cur.fetchall()
+    cur.close(); conn.close()
 
     if not records:
-        return jsonify({"message": "No attendance records found"}), 404
+        return jsonify({"message": "No attendance records found for this session"}), 404
 
-    recognized = set()
-    latest_ts = records[0]["timestamp"]
-    for r in records:
-        if abs((r["timestamp"] - latest_ts).total_seconds()) < 120:
-            recognized.add(r["student_id"])
+    present = {
+        r["student_id"]: {
+            "timestamp": r["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if r["timestamp"] else "-",
+            "methods":   r["methods"] or "-",
+        }
+        for r in records
+    }
 
     rows = []
     for sid in ALL_STUDENTS:
-        rows.append({
-            "Student_ID": sid,
-            "Status": "Present" if sid in recognized else "Absent",
-            "Timestamp": latest_ts.strftime("%Y-%m-%d %H:%M:%S") if sid in recognized else "-",
-        })
+        if sid in present:
+            rows.append({"Student_ID": sid, "Status": "Present",
+                         "Method": present[sid]["methods"], "Timestamp": present[sid]["timestamp"]})
+        else:
+            rows.append({"Student_ID": sid, "Status": "Absent", "Method": "-", "Timestamp": "-"})
 
     df = pd.DataFrame(rows)
     excel_path = os.path.join(DATA_DIR, "attendance_report.xlsx")
     with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Attendance")
         ws = writer.sheets["Attendance"]
-        for col, width in [("A", 15), ("B", 12), ("C", 22)]:
+        for col, width in [("A", 15), ("B", 12), ("C", 20), ("D", 22)]:
             ws.column_dimensions[col].width = width
+        from openpyxl.styles import PatternFill
+        green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        red   = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            fill = green if row[1].value == "Present" else red
+            for cell in row:
+                cell.fill = fill
 
-    return send_file(excel_path, as_attachment=True, download_name="attendance_report.xlsx")
+    return send_file(excel_path, as_attachment=True,
+                     download_name=f"attendance_report_{method_filter}.xlsx")
 
 
 @app.route("/api/students/list", methods=["GET"])
@@ -818,11 +668,11 @@ def validate_embeddings(current_user_id):
     stored = {m["student_id"] for m in all_data.get("metadatas", [])}
     missing = sorted(set(ALL_STUDENTS) - stored)
     return jsonify({
-        "valid": len(missing) == 0,
-        "total_students": len(ALL_STUDENTS),
-        "stored_students": len(stored),
-        "total_embeddings": len(all_data.get("ids", [])),
-        "missing_students": missing,
+        "valid":             len(missing) == 0,
+        "total_students":    len(ALL_STUDENTS),
+        "stored_students":   len(stored),
+        "total_embeddings":  len(all_data.get("ids", [])),
+        "missing_students":  missing,
     }), 200
 
 

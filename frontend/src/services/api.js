@@ -18,25 +18,22 @@ export const authAPI = {
   register: (userData)    => api.post('/auth/register', userData),
 };
 
-export const facultyAPI = {
-  registerStudents: () => api.post('/faculty/register-students'),
-};
-
 export const attendanceAPI = {
   upload: (formData) => api.post('/attendance/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
   manual:    (studentIds) => api.post('/attendance/manual', { student_ids: studentIds }),
-  getReport: ()           => api.get('/attendance/report', { responseType: 'blob' }),
+  getReport: (method = 'all', sessionIds = []) => api.get('/attendance/report', {
+    params: { method, session_ids: Array.isArray(sessionIds) ? sessionIds.join(',') : sessionIds },
+    responseType: 'blob',
+  }),
 };
 
 export const qrAPI = {
-  generate: ()      => api.post('/qr/generate'),
+  generate: () => api.post('/qr/generate'),
   status:   (token) => api.get(`/qr/status/${token}`),
-  // Public — no auth needed
   statusPublic: (backendUrl, token) =>
     axios.get(`${backendUrl}/api/qr/public-status/${token}`),
-  // No-auth scan: student_id entered manually, device fingerprint sent automatically via browser
   scan: (backendUrl, qrToken, studentId) =>
     axios.post(`${backendUrl}/api/qr/scan`, { qr_token: qrToken, student_id: studentId }),
 };

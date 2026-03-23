@@ -129,7 +129,8 @@ def generate_embeddings():
             metadatas_list.append({"student_id": student_id})
             success_count += 1
 
-            # Augmented variants — save to temp, embed, delete
+            # Augmented variants — save to temp (BGR, cv2 standard), embed, delete
+            # DeepFace.represent with detector=retinaface reads BGR→RGB internally — consistent
             for aug_idx, aug_img in enumerate(augment_image(base_img)[1:], 1):
                 temp_path = f"_aug_temp_{student_id}_{aug_idx}.jpg"
                 cv2.imwrite(temp_path, aug_img)
