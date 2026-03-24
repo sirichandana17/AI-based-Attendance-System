@@ -34,6 +34,8 @@ const Home = () => {
   const [manualResult, setManualResult]     = useState(null);
   // Report method filter
   const [reportMethod, setReportMethod]     = useState('all');
+  // Live attendance stats
+  const [stats, setStats]                   = useState(null);
 
   const countdownRef = useRef(null);
   const pollRef      = useRef(null);
@@ -50,6 +52,14 @@ const Home = () => {
   }, [navigate]);
 
   // ── Face Attendance ──────────────────────────────────────────────────────
+  const fetchStats = async (ids) => {
+    if (!ids.length) return;
+    try {
+      const res = await attendanceAPI.getStats(ids);
+      setStats(res.data);
+    } catch (_) {}
+  };
+
   const handleUploadImages = async (files) => {
     setLoading(true);
     setStatusMsg('');
@@ -60,7 +70,11 @@ const Home = () => {
       const res = await attendanceAPI.upload(formData);
       setAttendanceData(res.data);
       setStatusMsg(res.data.message);
-      if (res.data.session_id) setSessionIds(prev => [...new Set([...prev, res.data.session_id])]);
+      const newIds = res.data.session_id
+        ? [...new Set([...sessionIds, res.data.session_id])]
+        : sessionIds;
+      setSessionIds(newIds);
+      fetchStats(newIds);
       setShowUpload(false);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
     } catch (err) {
@@ -77,7 +91,11 @@ const Home = () => {
       setQrData(res.data);
       setQrCountdown(res.data.expires_in);
       setQrScanned([]);
-      if (res.data.session_id) setSessionIds(prev => [...new Set([...prev, res.data.session_id])]);
+      const newIds = res.data.session_id
+        ? [...new Set([...sessionIds, res.data.session_id])]
+        : sessionIds;
+      setSessionIds(newIds);
+      fetchStats(newIds);
       setTimeout(() => qrSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
       clearInterval(countdownRef.current);
@@ -94,6 +112,8 @@ const Home = () => {
           const s = await qrAPI.status(res.data.qr_token);
           setQrScanned(s.data.scanned_list || []);
           if (!s.data.active) clearInterval(pollRef.current);
+          // refresh stats as students scan
+          fetchStats(newIds);
         } catch (_) {}
       }, 3000);
     } catch (err) {
@@ -110,7 +130,11 @@ const Home = () => {
     try {
       const res = await attendanceAPI.manual(ids);
       setManualResult(res.data);
-      if (res.data.session_id) setSessionIds(prev => [...new Set([...prev, res.data.session_id])]);
+      const newIds = res.data.session_id
+        ? [...new Set([...sessionIds, res.data.session_id])]
+        : sessionIds;
+      setSessionIds(newIds);
+      fetchStats(newIds);
       if (res.data.added?.length) setManualAdded(prev => [...new Set([...prev, ...res.data.added])]);
       setManualInput('');
     } catch (err) {
@@ -143,6 +167,27 @@ const Home = () => {
           <h1>Welcome, {facultyName}!</h1>
           <p>Manage your classroom attendance efficiently</p>
         </div>
+
+        {/* ── Live Attendance Stats ── */}
+        {stats && (
+          <div style={{
+            display: 'flex', gap: '1rem', flexWrap: 'wrap',
+            marginBottom: '1.5rem', justifyContent: 'center',
+          }}>
+            <div style={statCardStyle('#6366f1', '#eef2ff')}>
+              <div style={{ fontSize: '2rem', fontWeight: 700, color: '#6366f1' }}>{stats.total}</div>
+              <div style={statLabelStyle}>Total Students</div>
+            </div>
+            <div style={statCardStyle('#22c55e', '#f0fdf4')}>
+              <div style={{ fontSize: '2rem', fontWeight: 700, color: '#22c55e' }}>{stats.present}</div>
+              <div style={statLabelStyle}>Present</div>
+            </div>
+            <div style={statCardStyle('#ef4444', '#fef2f2')}>
+              <div style={{ fontSize: '2rem', fontWeight: 700, color: '#ef4444' }}>{stats.absent}</div>
+              <div style={statLabelStyle}>Absent</div>
+            </div>
+          </div>
+        )}
 
         {/* ── Action Cards ── */}
         <div className="dashboard-grid">
@@ -432,5 +477,11 @@ const inputStyle = {
   width: '100%', padding: '0.65rem 0.75rem', border: '1px solid #e2e8f0',
   borderRadius: 6, fontSize: '0.95rem', boxSizing: 'border-box',
 };
+const statCardStyle = (color, bg) => ({
+  flex: '1 1 140px', maxWidth: 180, background: bg, borderRadius: 12,
+  padding: '1.25rem 1rem', textAlign: 'center',
+  border: `2px solid ${color}30`, boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+});
+const statLabelStyle = { fontSize: '0.82rem', color: '#64748b', marginTop: '0.3rem', fontWeight: 600, letterSpacing: '0.03em' };
 
 export default Home;

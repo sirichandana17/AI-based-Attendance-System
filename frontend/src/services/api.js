@@ -23,6 +23,9 @@ export const attendanceAPI = {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
   manual:    (studentIds) => api.post('/attendance/manual', { student_ids: studentIds }),
+  getStats:  (sessionIds = []) => api.get('/attendance/stats', {
+    params: { session_ids: Array.isArray(sessionIds) ? sessionIds.join(',') : sessionIds },
+  }),
   getReport: (method = 'all', sessionIds = []) => api.get('/attendance/report', {
     params: { method, session_ids: Array.isArray(sessionIds) ? sessionIds.join(',') : sessionIds },
     responseType: 'blob',

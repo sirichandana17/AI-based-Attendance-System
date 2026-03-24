@@ -652,6 +652,27 @@ def get_report(current_user_id):
                      download_name=f"attendance_report_{method_filter}.xlsx")
 
 
+@app.route("/api/attendance/stats", methods=["GET"])
+@token_required
+def get_attendance_stats(current_user_id):
+    session_ids_raw = request.args.get("session_ids", "").strip()
+    session_ids = [s.strip() for s in session_ids_raw.split(",") if s.strip()]
+    total = len(ALL_STUDENTS)
+    present = 0
+    if session_ids:
+        conn = get_db_connection()
+        if conn:
+            placeholders = ",".join(["%s"] * len(session_ids))
+            cur = conn.cursor()
+            cur.execute(f"""
+                SELECT COUNT(DISTINCT student_id) FROM attendance
+                WHERE faculty_id = %s AND session_id IN ({placeholders})
+            """, (current_user_id, *session_ids))
+            present = cur.fetchone()[0] or 0
+            cur.close(); conn.close()
+    return jsonify({"total": total, "present": present, "absent": total - present}), 200
+
+
 @app.route("/api/students/list", methods=["GET"])
 @token_required
 def get_students_list(current_user_id):
