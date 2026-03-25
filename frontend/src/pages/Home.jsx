@@ -34,6 +34,10 @@ const Home = () => {
   const [manualResult, setManualResult]     = useState(null);
   // Report method filter
   const [reportMethod, setReportMethod]     = useState('all');
+  // Public tunnel URLs for QR (ngrok etc.)
+  const [ngrokFrontend, setNgrokFrontend]   = useState('');
+  const [ngrokBackend, setNgrokBackend]     = useState('');
+  const [showNgrok, setShowNgrok]           = useState(false);
   // Live attendance stats
   const [stats, setStats]                   = useState(null);
 
@@ -87,7 +91,10 @@ const Home = () => {
   // ── QR Attendance ────────────────────────────────────────────────────────
   const handleGenerateQR = async () => {
     try {
-      const res = await qrAPI.generate();
+      const res = await qrAPI.generate(
+        ngrokFrontend.trim() || null,
+        ngrokBackend.trim()  || null,
+      );
       setQrData(res.data);
       setQrCountdown(res.data.expires_in);
       setQrScanned([]);
@@ -203,6 +210,37 @@ const Home = () => {
           <div className="card">
             <h3>QR Attendance</h3>
             <p>Generate a QR code for students to scan (expires in 2 min)</p>
+
+            {/* Public URL toggle */}
+            <div
+              onClick={() => setShowNgrok(v => !v)}
+              style={{ fontSize: '0.82rem', color: '#6366f1', cursor: 'pointer',
+                marginBottom: '0.6rem', userSelect: 'none', fontWeight: 600 }}
+            >
+              {showNgrok ? '▾' : '▸'} Mobile data / ngrok URLs
+            </div>
+            {showNgrok && (
+              <div style={{ marginBottom: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <input
+                  type="text"
+                  placeholder="Frontend URL  e.g. https://xxxx.ngrok-free.app"
+                  value={ngrokFrontend}
+                  onChange={e => setNgrokFrontend(e.target.value)}
+                  style={ngrokInputStyle}
+                />
+                <input
+                  type="text"
+                  placeholder="Backend URL   e.g. https://yyyy.ngrok-free.app"
+                  value={ngrokBackend}
+                  onChange={e => setNgrokBackend(e.target.value)}
+                  style={ngrokInputStyle}
+                />
+                <p style={{ fontSize: '0.75rem', color: '#94a3b8', margin: 0 }}>
+                  Leave blank to use LAN IP (same-WiFi only).
+                </p>
+              </div>
+            )}
+
             <button className="btn-primary" onClick={handleGenerateQR}>
               Generate QR Code
             </button>
@@ -476,6 +514,10 @@ const selectStyle = {
 const inputStyle = {
   width: '100%', padding: '0.65rem 0.75rem', border: '1px solid #e2e8f0',
   borderRadius: 6, fontSize: '0.95rem', boxSizing: 'border-box',
+};
+const ngrokInputStyle = {
+  width: '100%', padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
+  borderRadius: 6, fontSize: '0.82rem', boxSizing: 'border-box', color: '#374151',
 };
 const statCardStyle = (color, bg) => ({
   flex: '1 1 140px', maxWidth: 180, background: bg, borderRadius: 12,

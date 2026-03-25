@@ -33,7 +33,11 @@ export const attendanceAPI = {
 };
 
 export const qrAPI = {
-  generate: () => api.post('/qr/generate'),
+  generate: (frontendUrl, backendUrl) => api.post('/qr/generate',
+    frontendUrl || backendUrl
+      ? { frontend_url: frontendUrl, backend_url: backendUrl }
+      : {}
+  ),
   status:   (token) => api.get(`/qr/status/${token}`),
   statusPublic: (backendUrl, token) =>
     axios.get(`${backendUrl}/api/qr/public-status/${token}`),
