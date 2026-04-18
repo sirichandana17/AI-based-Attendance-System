@@ -16,7 +16,8 @@ const StatBadge = ({ label, value, color }) => (
 
 const Home = () => {
   const [loading, setLoading]               = useState(false);
-  const [facultyName, setFacultyName]       = useState('Faculty');
+  const [facultyName, setFacultyName]       = useState('');
+  const [currentTime, setCurrentTime]       = useState(new Date());
   const [attendanceData, setAttendanceData] = useState(null);
   const [statusMsg, setStatusMsg]           = useState('');
   const [showUpload, setShowUpload]         = useState(false);
@@ -52,7 +53,8 @@ const Home = () => {
     if (!token) navigate('/login');
     const name = localStorage.getItem('facultyName');
     if (name) setFacultyName(name);
-    return () => { clearInterval(countdownRef.current); clearInterval(pollRef.current); };
+    const clock = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => { clearInterval(countdownRef.current); clearInterval(pollRef.current); clearInterval(clock); };
   }, [navigate]);
 
   // ── Face Attendance ──────────────────────────────────────────────────────
@@ -170,9 +172,35 @@ const Home = () => {
     <div>
       <Navbar />
       <div className="container">
-        <div className="welcome-section">
-          <h1>Welcome, {facultyName}!</h1>
-          <p>Manage your classroom attendance efficiently</p>
+
+        {/* ── Header Banner ── */}
+        <div style={{
+          background: 'linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%)',
+          borderRadius: 14, padding: '1.75rem 2rem', marginBottom: '1.75rem',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          flexWrap: 'wrap', gap: '1rem',
+          boxShadow: '0 4px 20px rgba(30,58,95,0.18)',
+        }}>
+          <div>
+            <div style={{ fontSize: '0.82rem', color: '#93c5fd', fontWeight: 600,
+              letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.3rem' }}>
+              Faculty Dashboard
+            </div>
+            <h1 style={{ margin: 0, color: '#fff', fontSize: '1.6rem', fontWeight: 700 }}>
+              Welcome!
+            </h1>
+            <p style={{ margin: '0.3rem 0 0', color: '#bfdbfe', fontSize: '0.9rem' }}>
+              BVRIT Hyderabad College of Engineering for Women
+            </p>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ color: '#fff', fontSize: '1.5rem', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+              {currentTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </div>
+            <div style={{ color: '#93c5fd', fontSize: '0.85rem', marginTop: '0.2rem' }}>
+              {currentTime.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+            </div>
+          </div>
         </div>
 
         {/* ── Live Attendance Stats ── */}
@@ -198,23 +226,25 @@ const Home = () => {
 
         {/* ── Action Cards ── */}
         <div className="dashboard-grid">
-          <div className="card">
-            <h3>Face Attendance</h3>
-            <p>Upload classroom images to mark attendance via face recognition</p>
+          <div className="card" style={cardStyle}>
+            <div style={cardIconStyle('#dbeafe', '#2563eb')}>📷</div>
+            <h3 style={cardTitleStyle}>Face Recognition</h3>
+            <p style={cardDescStyle}>Upload a classroom photo to automatically detect and mark student attendance</p>
             <button className="btn-primary" disabled={loading}
               onClick={() => { setShowUpload(true); setStatusMsg(''); setAttendanceData(null); }}>
-              {loading ? 'Processing...' : 'Upload Images'}
+              {loading ? 'Processing...' : 'Upload Image'}
             </button>
           </div>
 
-          <div className="card">
-            <h3>QR Attendance</h3>
-            <p>Generate a QR code for students to scan (expires in 2 min)</p>
+          <div className="card" style={cardStyle}>
+            <div style={cardIconStyle('#dcfce7', '#16a34a')}>📱</div>
+            <h3 style={cardTitleStyle}>QR Code Attendance</h3>
+            <p style={cardDescStyle}>Generate a QR code for students to scan from their phones — expires in 2 minutes</p>
 
             {/* Public URL toggle */}
             <div
               onClick={() => setShowNgrok(v => !v)}
-              style={{ fontSize: '0.82rem', color: '#6366f1', cursor: 'pointer',
+              style={{ fontSize: '0.8rem', color: '#2563eb', cursor: 'pointer',
                 marginBottom: '0.6rem', userSelect: 'none', fontWeight: 600 }}
             >
               {showNgrok ? '▾' : '▸'} Mobile data / ngrok URLs
@@ -240,15 +270,15 @@ const Home = () => {
                 </p>
               </div>
             )}
-
             <button className="btn-primary" onClick={handleGenerateQR}>
               Generate QR Code
             </button>
           </div>
 
-          <div className="card">
-            <h3>Add Manually</h3>
-            <p>Mark missed students as present by entering their RNOs</p>
+          <div className="card" style={cardStyle}>
+            <div style={cardIconStyle('#fef9c3', '#ca8a04')}>✏️</div>
+            <h3 style={cardTitleStyle}>Manual Entry</h3>
+            <p style={cardDescStyle}>Manually mark students present by entering their roll numbers</p>
             <button className="btn-primary" onClick={() => { setShowManual(true); setManualResult(null); setManualInput(''); }}>
               Add Manually
             </button>
@@ -519,6 +549,17 @@ const ngrokInputStyle = {
   width: '100%', padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
   borderRadius: 6, fontSize: '0.82rem', boxSizing: 'border-box', color: '#374151',
 };
+const cardStyle = {
+  borderTop: '4px solid #1e3a5f', borderRadius: 12,
+  boxShadow: '0 2px 12px rgba(0,0,0,0.07)',
+};
+const cardIconStyle = (bg, color) => ({
+  width: 48, height: 48, borderRadius: 12, background: bg,
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  fontSize: '1.5rem', marginBottom: '0.75rem',
+});
+const cardTitleStyle = { margin: '0 0 0.4rem', fontSize: '1.05rem', fontWeight: 700, color: '#1e3a5f' };
+const cardDescStyle  = { color: '#64748b', fontSize: '0.88rem', marginBottom: '1rem', lineHeight: 1.5 };
 const statCardStyle = (color, bg) => ({
   flex: '1 1 140px', maxWidth: 180, background: bg, borderRadius: 12,
   padding: '1.25rem 1rem', textAlign: 'center',
