@@ -42,11 +42,12 @@ const Home = () => {
   // Live attendance stats
   const [stats, setStats]                   = useState(null);
 
-  const countdownRef = useRef(null);
-  const pollRef      = useRef(null);
-  const qrSectionRef = useRef(null);
-  const resultRef    = useRef(null);
-  const navigate     = useNavigate();
+  const countdownRef  = useRef(null);
+  const pollRef       = useRef(null);
+  const qrSectionRef  = useRef(null);
+  const resultRef     = useRef(null);
+  const sessionIdsRef = useRef([]);   // always mirrors sessionIds state
+  const navigate      = useNavigate();
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -57,7 +58,15 @@ const Home = () => {
     return () => { clearInterval(countdownRef.current); clearInterval(pollRef.current); clearInterval(clock); };
   }, [navigate]);
 
-  // ── Face Attendance ──────────────────────────────────────────────────────
+  // keeps ref in sync whenever state changes
+  const addSessionId = (id) => {
+    if (!id) return sessionIdsRef.current;
+    const next = [...new Set([...sessionIdsRef.current, id])];
+    sessionIdsRef.current = next;
+    setSessionIds(next);
+    return next;
+  };
+
   const fetchStats = async (ids) => {
     if (!ids.length) return;
     try {
@@ -66,6 +75,7 @@ const Home = () => {
     } catch (_) {}
   };
 
+  // ── Face Attendance ──────────────────────────────────────────────────────
   const handleUploadImages = async (files) => {
     setLoading(true);
     setStatusMsg('');
@@ -76,10 +86,7 @@ const Home = () => {
       const res = await attendanceAPI.upload(formData);
       setAttendanceData(res.data);
       setStatusMsg(res.data.message);
-      const newIds = res.data.session_id
-        ? [...new Set([...sessionIds, res.data.session_id])]
-        : sessionIds;
-      setSessionIds(newIds);
+      const newIds = addSessionId(res.data.session_id);
       fetchStats(newIds);
       setShowUpload(false);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
@@ -100,10 +107,7 @@ const Home = () => {
       setQrData(res.data);
       setQrCountdown(res.data.expires_in);
       setQrScanned([]);
-      const newIds = res.data.session_id
-        ? [...new Set([...sessionIds, res.data.session_id])]
-        : sessionIds;
-      setSessionIds(newIds);
+      const newIds = addSessionId(res.data.session_id);
       fetchStats(newIds);
       setTimeout(() => qrSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 
@@ -121,8 +125,7 @@ const Home = () => {
           const s = await qrAPI.status(res.data.qr_token);
           setQrScanned(s.data.scanned_list || []);
           if (!s.data.active) clearInterval(pollRef.current);
-          // refresh stats as students scan
-          fetchStats(newIds);
+          fetchStats(sessionIdsRef.current);
         } catch (_) {}
       }, 3000);
     } catch (err) {
@@ -139,10 +142,7 @@ const Home = () => {
     try {
       const res = await attendanceAPI.manual(ids);
       setManualResult(res.data);
-      const newIds = res.data.session_id
-        ? [...new Set([...sessionIds, res.data.session_id])]
-        : sessionIds;
-      setSessionIds(newIds);
+      const newIds = addSessionId(res.data.session_id);
       fetchStats(newIds);
       if (res.data.added?.length) setManualAdded(prev => [...new Set([...prev, ...res.data.added])]);
       setManualInput('');
@@ -155,7 +155,7 @@ const Home = () => {
 
   const handleDownloadReport = async () => {
     try {
-      const res = await attendanceAPI.getReport(reportMethod, sessionIds);
+      const res = await attendanceAPI.getReport(reportMethod, sessionIdsRef.current);
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
       a.href = url;
