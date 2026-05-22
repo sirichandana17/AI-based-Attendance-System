@@ -3,7 +3,6 @@
 A full-stack web application for automated classroom attendance using facial recognition and QR code scanning.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
-![React](https://img.shields.io/badge/react-19.2.0-blue.svg)
 
 ---
 
