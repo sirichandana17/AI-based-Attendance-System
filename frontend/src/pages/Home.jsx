@@ -14,6 +14,113 @@ const StatBadge = ({ label, value, color }) => (
   </div>
 );
 
+const STAGES = [
+  { icon: '📤', label: 'Uploading Image',       sub: 'Sending image to server...',           color: '#3b82f6' },
+  { icon: '🔍', label: 'Detecting Faces',        sub: 'RetinaFace scanning for faces...',      color: '#8b5cf6' },
+  { icon: '🧠', label: 'Recognizing Students',   sub: 'FaceNet512 matching embeddings...',     color: '#22c55e' },
+];
+
+const ProcessingOverlay = ({ compact = false, stage, progress }) => {
+  const { icon, label, sub, color } = STAGES[stage];
+
+  return (
+    <div style={{ padding: compact ? '1.25rem 1rem' : '2.5rem 2rem', textAlign: 'center' }}>
+      <style>{`
+        @keyframes pulse-ring {
+          0%   { transform: scale(0.95); box-shadow: 0 0 0 0 ${color}55; }
+          70%  { transform: scale(1);    box-shadow: 0 0 0 14px ${color}00; }
+          100% { transform: scale(0.95); box-shadow: 0 0 0 0 ${color}00; }
+        }
+        @keyframes scan-line {
+          0%   { top: 8px; opacity: 1; }
+          100% { top: 88px; opacity: 0.2; }
+        }
+        @keyframes fade-up {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes shimmer {
+          0%   { background-position: -400px 0; }
+          100% { background-position: 400px 0; }
+        }
+        @keyframes spin-slow {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
+        }
+      `}</style>
+
+      {/* Animated icon ring */}
+      <div style={{ position: 'relative', width: 96, height: 96, margin: '0 auto 1.5rem' }}>
+        {/* Spinning outer ring */}
+        <div style={{
+          position: 'absolute', inset: 0, borderRadius: '50%',
+          border: `3px solid ${color}22`,
+          borderTop: `3px solid ${color}`,
+          animation: 'spin-slow 1.2s linear infinite',
+        }} />
+        {/* Pulsing inner circle */}
+        <div style={{
+          position: 'absolute', inset: 8, borderRadius: '50%',
+          background: `${color}15`,
+          animation: 'pulse-ring 1.5s ease-out infinite',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '2.2rem',
+        }}>
+          {icon}
+        </div>
+        {/* Scan line (only on detect stage) */}
+        {stage === 1 && (
+          <div style={{
+            position: 'absolute', left: 8, right: 8, height: 2,
+            background: `linear-gradient(90deg, transparent, ${color}, transparent)`,
+            animation: 'scan-line 1s ease-in-out infinite alternate',
+            borderRadius: 2,
+          }} />
+        )}
+      </div>
+
+      {/* Stage label */}
+      <div key={label} style={{ animation: 'fade-up 0.4s ease' }}>
+        <div style={{ fontSize: '1.15rem', fontWeight: 700, color: '#1e3a5f', marginBottom: '0.3rem' }}>
+          {label}
+        </div>
+        <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '1.75rem' }}>{sub}</div>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ background: '#f1f5f9', borderRadius: 99, height: 8, overflow: 'hidden', marginBottom: '1rem' }}>
+        <div style={{
+          height: '100%', borderRadius: 99, width: `${progress}%`,
+          background: `linear-gradient(90deg, ${color}99, ${color})`,
+          backgroundSize: '400px 100%',
+          animation: 'shimmer 1.4s linear infinite',
+          transition: 'width 0.12s linear',
+        }} />
+      </div>
+      <div style={{ fontSize: '0.78rem', color: '#94a3b8' }}>{Math.round(progress)}% complete</div>
+
+      {/* Stage dots */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', marginTop: '1.5rem' }}>
+        {STAGES.map((s, i) => (
+          <div key={i} style={{
+            display: 'flex', alignItems: 'center', gap: '0.3rem',
+            fontSize: '0.75rem', fontWeight: i === stage ? 700 : 400,
+            color: i < stage ? '#22c55e' : i === stage ? s.color : '#cbd5e1',
+            transition: 'color 0.3s',
+          }}>
+            <div style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: i < stage ? '#22c55e' : i === stage ? s.color : '#e2e8f0',
+              transition: 'background 0.3s',
+            }} />
+            {s.label.split(' ')[0]}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const Home = () => {
   const [loading, setLoading]               = useState(false);
   const [facultyName, setFacultyName]       = useState('');
@@ -41,6 +148,12 @@ const Home = () => {
   const [showNgrok, setShowNgrok]           = useState(false);
   // Live attendance stats
   const [stats, setStats]                   = useState(null);
+  // PiP expanded state
+  const [pipExpanded, setPipExpanded]       = useState(false);
+  // Processing animation state — lifted here so it survives pip toggle
+  const [pipStage, setPipStage]             = useState(0);
+  const [pipProgress, setPipProgress]       = useState(0);
+  const pipTimerRef = useRef(null);
 
   const countdownRef  = useRef(null);
   const pollRef       = useRef(null);
@@ -55,7 +168,7 @@ const Home = () => {
     const name = localStorage.getItem('facultyName');
     if (name) setFacultyName(name);
     const clock = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => { clearInterval(countdownRef.current); clearInterval(pollRef.current); clearInterval(clock); };
+    return () => { clearInterval(countdownRef.current); clearInterval(pollRef.current); clearInterval(clock); clearInterval(pipTimerRef.current); };
   }, [navigate]);
 
   // keeps ref in sync whenever state changes
@@ -80,6 +193,18 @@ const Home = () => {
     setLoading(true);
     setStatusMsg('');
     setAttendanceData(null);
+    setPipExpanded(false);
+    setPipStage(0);
+    setPipProgress(0);
+    clearInterval(pipTimerRef.current);
+    pipTimerRef.current = setInterval(() => {
+      setPipProgress(prev => {
+        const next = prev + 0.55;
+        if (prev < 30 && next >= 30) setPipStage(1);
+        if (prev < 65 && next >= 65) setPipStage(2);
+        return Math.min(next, 95);
+      });
+    }, 110);
     try {
       const formData = new FormData();
       files.forEach(f => formData.append('images', f));
@@ -93,6 +218,7 @@ const Home = () => {
     } catch (err) {
       setStatusMsg(err.response?.data?.message || 'Failed to process attendance');
     } finally {
+      clearInterval(pipTimerRef.current);
       setLoading(false);
     }
   };
@@ -171,6 +297,7 @@ const Home = () => {
   return (
     <div>
       <Navbar />
+
       <div className="container">
 
         {/* ── Header Banner ── */}
@@ -327,17 +454,75 @@ const Home = () => {
           </div>
         </div>
 
+
+
         {/* ── Image Upload Modal ── */}
         {showUpload && (
-          <div className="modal-overlay" onClick={() => setShowUpload(false)}>
-            <div className="modal-content" onClick={e => e.stopPropagation()}>
-              <div className="modal-header">
-                <h3>Upload Classroom Images</h3>
-                <button className="modal-close" onClick={() => setShowUpload(false)}>×</button>
+          <>
+            {/* Full modal — only when not loading */}
+            {!loading && (
+              <div className="modal-overlay" onClick={() => setShowUpload(false)}>
+                <div className="modal-content" onClick={e => e.stopPropagation()}>
+                  <div className="modal-header">
+                    <h3>Upload Classroom Images</h3>
+                    <button className="modal-close" onClick={() => setShowUpload(false)}>×</button>
+                  </div>
+                  <ImageUpload onUpload={handleUploadImages} loading={loading} />
+                </div>
               </div>
-              <ImageUpload onUpload={handleUploadImages} loading={loading} />
-            </div>
-          </div>
+            )}
+
+            {/* Minimised floating pill — only when loading */}
+            {loading && (
+              <div style={{
+                position: 'fixed', bottom: 24, right: 24, zIndex: 1100,
+                background: '#1e3a5f', borderRadius: pipExpanded ? 16 : 50,
+                boxShadow: '0 6px 32px rgba(0,0,0,0.32)',
+                cursor: 'pointer',
+                width: pipExpanded ? 360 : 'auto',
+                transition: 'border-radius 0.25s, width 0.25s',
+                overflow: 'hidden',
+              }}>
+
+                {/* Pill header row — always visible, click to toggle */}
+                <div
+                  onClick={() => setPipExpanded(v => !v)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '0.65rem',
+                    padding: '0.72rem 1.1rem', userSelect: 'none',
+                  }}>
+                  <div style={{
+                    width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
+                    border: '2px solid #3b82f640',
+                    borderTop: '2px solid #60a5fa',
+                    animation: 'spin-slow 1s linear infinite',
+                  }} />
+                  <span style={{ color: '#e0f2fe', fontSize: '0.88rem', fontWeight: 600, flex: 1, whiteSpace: 'nowrap' }}>
+                    Face Recognition Running
+                  </span>
+                  <span style={{
+                    color: '#93c5fd', fontSize: '0.78rem', fontWeight: 600,
+                    background: '#ffffff18', borderRadius: 20,
+                    padding: '0.15rem 0.55rem',
+                  }}>
+                    {pipExpanded ? '▾ Hide' : '▴ Details'}
+                  </span>
+                </div>
+
+                {/* Expanded body — grows upward because pill is anchored to bottom */}
+                {pipExpanded && (
+                  <div style={{
+                    borderTop: '1px solid #ffffff18',
+                    background: '#fff',
+                    display: 'flex', justifyContent: 'center',
+                  }}
+                    onClick={e => e.stopPropagation()}>
+                    <ProcessingOverlay compact stage={pipStage} progress={pipProgress} />
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
 
         {/* ── Manual Attendance Modal ── */}
