@@ -483,6 +483,13 @@ const Home = () => {
                 transition: 'border-radius 0.25s, width 0.25s',
                 overflow: 'hidden',
               }}>
+                {/* Always-present keyframes so spinner works even when panel is collapsed */}
+                <style>{`
+                  @keyframes pip-spin {
+                    from { transform: rotate(0deg); }
+                    to   { transform: rotate(360deg); }
+                  }
+                `}</style>
 
                 {/* Pill header row — always visible, click to toggle */}
                 <div
@@ -495,7 +502,7 @@ const Home = () => {
                     width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
                     border: '2px solid #3b82f640',
                     borderTop: '2px solid #60a5fa',
-                    animation: 'spin-slow 1s linear infinite',
+                    animation: 'pip-spin 0.9s linear infinite',
                   }} />
                   <span style={{ color: '#e0f2fe', fontSize: '0.88rem', fontWeight: 600, flex: 1, whiteSpace: 'nowrap' }}>
                     Face Recognition Running

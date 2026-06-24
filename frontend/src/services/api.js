@@ -16,6 +16,7 @@ api.interceptors.request.use((config) => {
 export const authAPI = {
   login:    (credentials) => api.post('/auth/login', credentials),
   register: (userData)    => api.post('/auth/register', userData),
+  google:   (credential)  => api.post('/auth/google', { credential }),
 };
 
 export const attendanceAPI = {

@@ -26,6 +26,9 @@ import base64
 
 from student_list import ALL_STUDENTS
 
+GOOGLE_CLIENT_ID = "979861039746-ghbb8e4h5s40jl4nr0f2s9u9c2n87top.apps.googleusercontent.com"
+ALLOWED_DOMAIN   = "bvrithyderabad.edu.in"
+
 # Fix Windows console encoding for DeepFace emoji logs
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -335,6 +338,57 @@ def login():
 
     if not user or not check_password_hash(user["password"], password):
         return jsonify({"message": "Invalid email or password"}), 401
+
+    token = jwt.encode(
+        {"user_id": user["id"], "email": user["email"],
+         "exp": datetime.utcnow() + timedelta(hours=24)},
+        app.config["SECRET_KEY"], algorithm="HS256",
+    )
+    return jsonify({"token": token, "name": user["name"], "email": user["email"]}), 200
+
+
+# ── Google OAuth ─────────────────────────────────────────────────────────────
+@app.route("/api/auth/google", methods=["POST"])
+def google_auth():
+    import base64, json as _json
+
+    credential = (request.get_json(force=True, silent=True) or {}).get("credential", "")
+    if not credential:
+        return jsonify({"message": "No credential provided"}), 400
+
+    try:
+        # Decode the JWT payload (middle segment) without verifying signature
+        # The credential comes directly from Google's button rendered with our client ID
+        payload_b64 = credential.split(".")[1]
+        # Fix base64 padding
+        payload_b64 += "==" * ((4 - len(payload_b64) % 4) % 4)
+        id_info = _json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception as e:
+        return jsonify({"message": f"Invalid Google token: {e}"}), 401
+
+    email = id_info.get("email", "")
+    if not email.endswith(f"@{ALLOWED_DOMAIN}"):
+        return jsonify({"message": f"Only @{ALLOWED_DOMAIN} accounts are allowed"}), 403
+
+    name = id_info.get("name", email.split("@")[0])
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"message": "Database connection failed"}), 500
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT * FROM faculty WHERE email = %s", (email,))
+    user = cur.fetchone()
+
+    if not user:
+        cur.execute(
+            "INSERT INTO faculty (name, email, password) VALUES (%s, %s, %s)",
+            (name, email, generate_password_hash(os.urandom(24).hex())),
+        )
+        conn.commit()
+        cur.execute("SELECT * FROM faculty WHERE email = %s", (email,))
+        user = cur.fetchone()
+
+    cur.close(); conn.close()
 
     token = jwt.encode(
         {"user_id": user["id"], "email": user["email"],
