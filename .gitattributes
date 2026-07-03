@@ -1,3 +1,2 @@
-frontend/** linguist-vendored
 backend/chroma_db/** linguist-generated=true
 backend/Dataset/** linguist-generated=true
